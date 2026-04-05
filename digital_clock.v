@@ -2,6 +2,9 @@
 `default_nettype none
 
 // SW0: Stopwatch | SW1: Set Time | SW2: 12/24h | SW3: Alarm Set | SW4: Alarm Kill
+// SW[10]: Chatham Islands (UTC+12:30)
+// SW[11]: Hawaii (UTC-10) | SW[12]: London (UTC+0) | SW[13]: New York (UTC-5)
+// SW[14]: Moscow (UTC+3) | SW[15]: Tokyo (UTC+9)
 
 module digital_clock (
     input  wire        CLK100MHZ,
@@ -45,7 +48,7 @@ module digital_clock (
     wire alarm_set_mode = SW_S[3] && !SW_S[1];
     wire stopwatch_mode = SW_S[0] && !time_set_mode && !alarm_set_mode;
 
-    // Time logic
+    // Time logic - sw_zones expanded to 6 bits: SW[15:10]
     wire [3:0] h1, h0, m1, m0, s1, s0;
     wire [4:0] raw_h;
     wire [5:0] raw_m, raw_s;
@@ -60,7 +63,7 @@ module digital_clock (
         .btn_h      (time_set_mode ? b_up    : 1'b0),
         .btn_m      (time_set_mode ? b_down  : 1'b0),
         .btn_s      (time_set_mode ? b_right : 1'b0),
-        .sw_zones   (SW_S[15:11]),
+        .sw_zones   (SW_S[15:10]),   // was SW_S[15:11], now includes SW[10]
         .h1(h1), .h0(h0), .m1(m1), .m0(m0), .s1(s1), .s0(s0),
         .is_pm(pm_ind),
         .raw_h(raw_h), .raw_m(raw_m), .raw_s(raw_s)
@@ -111,7 +114,7 @@ module digital_clock (
     wire [3:0] al_m0   = (alarm_m_stored % 10);
     wire [3:0] al_ampm = alarm_pm ? CH_P : CH_A;
 
-    wire [3:0] al24_h1 = alarm_h_stored / 10;  // Separate wires prevent concat width truncation
+    wire [3:0] al24_h1 = alarm_h_stored / 10;
     wire [3:0] al24_h0 = alarm_h_stored % 10;
 
     // Stopwatch
@@ -147,11 +150,11 @@ module digital_clock (
     );
 
     // LEDs
-    assign LED[0]    = pm_ind;        // PM indicator (12h mode)
+    assign LED[0]    = pm_ind;
     assign LED[1]    = stopwatch_mode;
     assign LED[2]    = alarm_ringing;
     assign LED[3]    = alarm_set_mode;
-    assign LED[4]    = alarm_kill;    // Alarm disabled indicator
+    assign LED[4]    = alarm_kill;
     assign LED[15:5] = 11'b0;
 
 endmodule
@@ -239,11 +242,12 @@ endmodule
 // ==========================================================
 // TIME LOGIC
 // Base timezone: Dhaka (UTC+6). Offsets are relative to that.
+// NOW SUPPORTS HALF-HOUR TIMEZONE OFFSETS (e.g. UTC+12:30)
 // ==========================================================
 module time_logic (
     input  wire clk, rst, tick_1hz, set_mode, mode_12_24,
     input  wire btn_h, btn_m, btn_s,
-    input  wire [4:0] sw_zones,
+    input  wire [5:0] sw_zones,    // expanded from [4:0] to add Chatham
     output wire [3:0] h1, h0, m1, m0, s1, s0,
     output wire is_pm,
     output wire [4:0] raw_h,
@@ -252,6 +256,7 @@ module time_logic (
     reg [5:0] s, m;
     reg [4:0] h;
 
+    // Timekeeping counters - always count in Dhaka time
     always @(posedge clk) begin
         if (rst) begin
             h <= 0; m <= 0; s <= 0;
@@ -268,30 +273,65 @@ module time_logic (
         end
     end
 
-    reg signed [5:0] offset;
-    reg signed [6:0] h_temp;
-    reg [4:0] h_adj_u, h_disp;
+    // Timezone offset variables
+    reg signed [5:0] offset;        // hour offset from Dhaka, range -16 to +6
+    reg signed [6:0] min_offset;    // minute offset, 0 or +30
+
+    // Intermediate computation registers
+    reg signed [7:0] m_temp;        // m + min_offset, range -30 to 89
+    reg        [5:0] m_adj;         // adjusted minutes, 0-59
+    reg signed [7:0] h_temp;        // h + offset + carry, range -17 to 30
+    reg        [4:0] h_adj_u;       // adjusted hour unsigned, 0-23
+    reg        [4:0] h_disp;        // display hour (after 12h conversion)
 
     always @(*) begin
-        // Timezone offsets relative to Dhaka (UTC+6)
-        if      (sw_zones[0]) offset = -6'sd16;  // Hawaii  (UTC-10)
-        else if (sw_zones[1]) offset = -6'sd6;   // London  (UTC+0)
-        else if (sw_zones[2]) offset = -6'sd11;  // New York (UTC-5)
-        else if (sw_zones[3]) offset = -6'sd3;   // Moscow  (UTC+3)
-        else if (sw_zones[4]) offset =  6'sd3;   // Tokyo   (UTC+9)
-        else                  offset =  6'sd0;   // Dhaka   (UTC+6, base)
+        // -------------------------------------------------------
+        // Step 1: Select timezone offset (hours + minutes)
+        // -------------------------------------------------------
+        if      (sw_zones[1]) begin offset = -6'sd16; min_offset = 7'sd0;  end  // Hawaii   (UTC-10)
+        else if (sw_zones[2]) begin offset = -6'sd6;  min_offset = 7'sd0;  end  // London   (UTC+0)
+        else if (sw_zones[3]) begin offset = -6'sd11; min_offset = 7'sd30;  end  // New York (UTC-5)
+        else if (sw_zones[4]) begin offset = -6'sd3;  min_offset = 7'sd0;  end  // Moscow   (UTC+3)
+        else if (sw_zones[5]) begin offset =  6'sd3;  min_offset = 7'sd0;  end  // Tokyo    (UTC+9)
+        else if (sw_zones[0]) begin offset =  6'sd6;  min_offset = 7'sd30; end  // Chatham  (UTC+12:30)
+        else                  begin offset =  6'sd0;  min_offset = 7'sd0;  end  // Dhaka    (UTC+6)
 
-        h_temp = $signed({2'b00, h}) + offset;
+        // -------------------------------------------------------
+        // Step 2: Adjust minutes and compute carry into hours
+        //   m is 0-59, min_offset is 0 or +30
+        //   m_temp range: 0 to 89
+        //   If m_temp >= 60, subtract 60 and carry +1 hour
+        //   If m_temp < 0,   add 60 and carry -1 hour
+        // -------------------------------------------------------
+        m_temp = $signed({2'b00, m}) + $signed({min_offset[6], min_offset});
 
-        if      (h_temp < 0)   h_adj_u = h_temp + 7'sd24;
-        else if (h_temp >= 24) h_adj_u = h_temp - 7'sd24;
-        else                   h_adj_u = h_temp[4:0];
+        if (m_temp >= 8'sd60) begin
+            m_adj  = m_temp - 8'sd60;
+            h_temp = $signed({3'b000, h}) + $signed({{2{offset[5]}}, offset}) + 8'sd1;
+        end else if (m_temp < 8'sd0) begin
+            m_adj  = m_temp + 8'sd60;
+            h_temp = $signed({3'b000, h}) + $signed({{2{offset[5]}}, offset}) - 8'sd1;
+        end else begin
+            m_adj  = m_temp[5:0];
+            h_temp = $signed({3'b000, h}) + $signed({{2{offset[5]}}, offset});
+        end
 
+        // -------------------------------------------------------
+        // Step 3: Wrap hours into 0-23
+        
+        // -------------------------------------------------------
+        if      (h_temp < 0)       h_adj_u = h_temp + 8'sd24;
+        else if (h_temp >= 8'sd24) h_adj_u = h_temp - 8'sd24;
+        else                       h_adj_u = h_temp[4:0];
+
+        // -------------------------------------------------------
+        // Step 4: 12h/24h conversion
+        // -------------------------------------------------------
         if (mode_12_24) begin
-            if      (h_adj_u == 0)  h_disp = 5'd12;
-            else if (h_adj_u < 12)  h_disp = h_adj_u;
-            else if (h_adj_u == 12) h_disp = 5'd12;
-            else                    h_disp = h_adj_u - 12;
+            if      (h_adj_u == 0)  h_disp = 5'd12;   // midnight = 12 AM
+            else if (h_adj_u < 12)  h_disp = h_adj_u;  // 1-11 AM
+            else if (h_adj_u == 12) h_disp = 5'd12;    // noon = 12 PM
+            else                    h_disp = h_adj_u - 12; // 1-11 PM
         end else begin
             h_disp = h_adj_u;
         end
@@ -299,10 +339,12 @@ module time_logic (
 
     assign is_pm = (h_adj_u >= 12);
 
-    assign h1 = h_disp / 10; assign h0 = h_disp % 10;
-    assign m1 = m / 10;      assign m0 = m % 10;
-    assign s1 = s / 10;      assign s0 = s % 10;
+    // Display digits - hours and minutes are timezone-adjusted, seconds are not
+    assign h1 = h_disp / 10;  assign h0 = h_disp % 10;
+    assign m1 = m_adj / 10;   assign m0 = m_adj % 10;    // NOW USES ADJUSTED MINUTES
+    assign s1 = s / 10;       assign s0 = s % 10;
 
+    // Raw outputs for alarm comparison (always Dhaka time, no adjustment)
     assign raw_h = h;
     assign raw_m = m;
     assign raw_s = s;
@@ -326,9 +368,14 @@ module alarm_controller (
     output reg  [4:0] set_h,
     output reg  [5:0] set_m
 );
+
+    // =========================
+    // Alarm time setting 
+    // =========================
     always @(posedge clk) begin
         if (rst) begin
-            set_h <= 0; set_m <= 0;
+            set_h <= 0;
+            set_m <= 0;
         end else if (set_mode) begin
             if (btn_h) set_h <= (set_h == 23) ? 0 : set_h + 1;
             if (btn_m) set_m <= (set_m == 59) ? 0 : set_m + 1;
@@ -337,52 +384,105 @@ module alarm_controller (
         end
     end
 
-    localparam [1:0] IDLE = 2'd0, RINGING = 2'd1, SNOOZING = 2'd2;
+    // =========================
+    // FSM STATES 
+    // =========================
+    localparam [1:0] IDLE = 2'd0,
+                     RINGING = 2'd1,
+                     SNOOZING = 2'd2;
+
     localparam [5:0] SNOOZE_SECONDS = 6'd15;
 
     reg [1:0] state;
     reg [5:0] snooze_counter;
 
+    // =========================
+
+    // Prevent startup trigger
+    // =========================
+    reg armed;
+
+    always @(posedge clk) begin
+        if (rst)
+            armed <= 1'b0;
+        else if (tick_1hz)
+            armed <= 1'b1;
+    end
+
+    // =========================
+    // FSM LOGIC 
+    // =========================
     always @(posedge clk) begin
         if (rst) begin
-            state <= IDLE; alarm_active <= 1'b0; snooze_counter <= 6'd0;
+            state <= IDLE;
+            alarm_active <= 1'b0;
+            snooze_counter <= 6'd0;
         end else if (kill) begin
-            state <= IDLE; alarm_active <= 1'b0; snooze_counter <= 6'd0;
+            
+            state <= IDLE;
+            alarm_active <= 1'b0;
+            snooze_counter <= 6'd0;
         end else begin
             case (state)
+
+                // -------------------------
+                // IDLE
+                // -------------------------
                 IDLE: begin
                     alarm_active <= 1'b0;
-                    if (!set_mode && !inhibit &&
-                        current_h == set_h && current_m == set_m && current_s == 0)
+
+                    if (armed && !set_mode && !inhibit &&
+                        tick_1hz &&                    
+                        current_h == set_h &&
+                        current_m == set_m &&
+                        current_s == 0) begin
+
                         state <= RINGING;
+                    end
                 end
 
+                // -------------------------
+                // RINGING 
+                // -------------------------
                 RINGING: begin
                     alarm_active <= 1'b1;
-                    if (set_mode || inhibit)         state <= IDLE;
-                    else if (current_m != set_m)     state <= IDLE;
+
+                    if (set_mode || inhibit) begin
+                        state <= IDLE;
+                    end
                     else if (snooze_btn) begin
                         state <= SNOOZING;
-                        snooze_counter <= SNOOZE_SECONDS-1;
+                        snooze_counter <= SNOOZE_SECONDS - 1;
                     end
+
                 end
 
+                // -------------------------
+                // SNOOZING 
+                // -------------------------
                 SNOOZING: begin
                     alarm_active <= 1'b0;
+
                     if (set_mode || inhibit) begin
-                        state <= IDLE; snooze_counter <= 0;
+                        state <= IDLE;
+                        snooze_counter <= 0;
                     end else if (tick_1hz) begin
-                        if (snooze_counter == 6'd0) state <= RINGING;
-                        else snooze_counter <= snooze_counter - 1;
+                        if (snooze_counter == 0)
+                            state <= RINGING;
+                        else
+                            snooze_counter <= snooze_counter - 1;
                     end
                 end
 
-                default: begin state <= IDLE; alarm_active <= 1'b0; end
+                default: begin
+                    state <= IDLE;
+                    alarm_active <= 1'b0;
+                end
             endcase
         end
     end
-endmodule
 
+endmodule
 
 // ==========================================================
 // STOPWATCH - with hours and lap hold
@@ -447,7 +547,7 @@ module display_mux (
     reg [2:0] sel;
     reg [3:0] val;
 
-    localparam integer BLANK_CYCLES = 1000; // ~10us @ 100MHz
+    localparam integer BLANK_CYCLES = 1000;
     reg [15:0] blank_cnt;
 
     always @(posedge clk) begin
