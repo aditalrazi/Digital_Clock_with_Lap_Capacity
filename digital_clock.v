@@ -3,7 +3,7 @@
 
 // SW0: Stopwatch | SW1: Set Time | SW2: 12/24h | SW3: Alarm Set | SW4: Alarm Kill
 // SW[10]: Chatham Islands (UTC+12:30)
-// SW[11]: Hawaii (UTC-10) | SW[12]: London (UTC+0) | SW[13]: New York (UTC-5)
+// SW[11]: Hawaii (UTC-10) | SW[12]: London (UTC+0) | SW[13]: New York (UTC-5:30)
 // SW[14]: Moscow (UTC+3) | SW[15]: Tokyo (UTC+9)
 
 module digital_clock (
@@ -290,7 +290,7 @@ module time_logic (
         // -------------------------------------------------------
         if      (sw_zones[1]) begin offset = -6'sd16; min_offset = 7'sd0;  end  // Hawaii   (UTC-10)
         else if (sw_zones[2]) begin offset = -6'sd6;  min_offset = 7'sd0;  end  // London   (UTC+0)
-        else if (sw_zones[3]) begin offset = -6'sd11; min_offset = 7'sd30;  end  // New York (UTC-5)
+        else if (sw_zones[3]) begin offset = -6'sd11; min_offset = 7'sd30;  end  // New York (UTC-5:30)
         else if (sw_zones[4]) begin offset = -6'sd3;  min_offset = 7'sd0;  end  // Moscow   (UTC+3)
         else if (sw_zones[5]) begin offset =  6'sd3;  min_offset = 7'sd0;  end  // Tokyo    (UTC+9)
         else if (sw_zones[0]) begin offset =  6'sd6;  min_offset = 7'sd30; end  // Chatham  (UTC+12:30)
@@ -596,4 +596,4 @@ module display_mux (
     end
 endmodule
 
-`default_nettype wire
+`default_nettype wires
