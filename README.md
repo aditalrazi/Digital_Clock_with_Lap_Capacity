@@ -154,7 +154,3 @@ Connect the Nexys A7 via USB-JTAG and use **Open Hardware Manager → Program De
 - **Mode priority** is: Time-set > Alarm-set > Stopwatch > Normal.
 
 ---
-
-## License
-
-This project is released under the [MIT License](LICENSE).
