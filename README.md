@@ -121,7 +121,7 @@ The 8-digit display shows different content depending on the active mode:
 
 ```bash
 git clone https://github.com/aditalrazi/Digital_Clock_with_Lap_Capacity.git
-cd digital-clock-fpga
+cd Digital_Clock_with_Lap_Capacity
 ```
 
 ### 2. Open in Vivado
