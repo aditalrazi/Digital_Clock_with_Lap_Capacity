@@ -120,7 +120,7 @@ The 8-digit display shows different content depending on the active mode:
 ### 1. Clone / copy the files
 
 ```bash
-git clone https://github.com/<your-username>/digital-clock-fpga.git
+git clone https://github.com/aditalrazi/Digital_Clock_with_Lap_Capacity.git
 cd digital-clock-fpga
 ```
 
