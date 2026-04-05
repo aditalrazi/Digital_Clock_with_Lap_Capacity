@@ -8,8 +8,8 @@ A fully-featured digital clock implemented in Verilog, targeting the **Digilent 
 
 - **Real-time clock** — hours, minutes, seconds with automatic rollover
 - **12 / 24-hour mode** — toggled via a slide switch; PM indicator on LED
-- **Timezone display** — five selectable offsets relative to Dhaka (UTC+6): Hawaii, London, New York, Moscow, Tokyo
-- **Alarm** — settable hour/minute with 12h AM/PM or 24h entry; 15-second snooze; instant kill switch
+- **Timezone display** — six selectable offsets relative to Dhaka (UTC+6), including half-hour zones: Hawaii, London, New York (UTC−5:30), Moscow, Tokyo, and Chatham Islands (UTC+12:30)
+- **Alarm** — settable hour/minute with 12h AM/PM or 24h entry; 15-second snooze; instant kill switch; startup-safe (will not fire on power-up)
 - **Stopwatch** — start/stop, lap hold, and reset; counts up to 99h 59m 59s
 - **Debounced buttons** — 8-sample majority filter at 1 kHz prevents false triggers
 - **Async-assert / sync-release reset** — glitch-free reset synchroniser
@@ -33,8 +33,8 @@ digital_clock          (top)
 ├── reset_sync         Async-assert, sync-deassert reset synchroniser
 ├── clk_divider        Generates 1 Hz, 100 Hz, and 1 kHz tick pulses
 ├── debounce_onepulse  One-shot debouncer (×5, one per button)
-├── time_logic         HH:MM:SS counter + timezone offset + 12/24h formatting
-├── alarm_controller   Alarm set, ring, snooze, and kill FSM
+├── time_logic         HH:MM:SS counter + half-hour timezone offsets + 12/24h formatting
+├── alarm_controller   Alarm set, ring, snooze, and kill FSM (with startup-arm guard)
 ├── stopwatch          HH:MM:SS stopwatch with lap display
 └── display_mux        8-digit multiplexed 7-segment driver with blanking
 ```
@@ -63,30 +63,33 @@ digital_clock          (top)
 | SW2 | 12h (ON) / 24h (OFF) display |
 | SW3 | Alarm-set mode (ignored while SW1 is ON) |
 | SW4 | Alarm kill — disables alarm and stops ringing immediately |
-| SW11–SW15 | Timezone select (see table below) |
+| SW10–SW15 | Timezone select (see table below) |
 
-### Timezone Selection (SW11–SW15)
+### Timezone Selection (SW10–SW15)
 
 | Switch | Timezone | UTC Offset |
 |--------|----------|------------|
+| SW10 | Chatham Islands | UTC+12:30 |
 | SW11 | Hawaii | UTC−10 |
 | SW12 | London | UTC+0 |
-| SW13 | New York | UTC−5 |
+| SW13 | New York | UTC−5:30 |
 | SW14 | Moscow | UTC+3 |
 | SW15 | Tokyo | UTC+9 |
 | None | Dhaka (base) | UTC+6 |
 
+> Only one timezone switch should be ON at a time. Priority is SW10 < SW11 < ... < SW15 (higher switch number wins if multiple are ON).
+
+> **Half-hour zones:** New York (UTC−5:30) and Chatham Islands (UTC+12:30) apply a ±30-minute offset to the displayed minutes in addition to the hour offset. Alarm comparison always uses raw Dhaka time internally.
+
 ### Pushbuttons
 
-| Button | Time-set mode | Alarm-set mode | Stopwatch mode |
-|--------|--------------|----------------|----------------|
-| BTU (Up) | +1 Hour | +1 Hour | Start / Stop |
-| BTD (Down) | +1 Minute | +1 Minute | — |
-| BTR (Right) | Reset seconds to 0 | — | Reset |
-| BTL (Left) | — | Toggle AM/PM (12h) | Lap / Unlap |
-| BTC (Center) | — | — (Snooze in normal) | — |
-
-> BTC (Center) acts as **Snooze** when the alarm is ringing, regardless of mode.
+| Button | Time-set mode | Alarm-set mode | Stopwatch mode | Alarm ringing |
+|--------|--------------|----------------|----------------|---------------|
+| BTU (Up) | +1 Hour | +1 Hour | Start / Stop | — |
+| BTD (Down) | +1 Minute | +1 Minute | — | — |
+| BTR (Right) | Reset seconds to 0 | — | Reset | — |
+| BTL (Left) | — | Toggle AM/PM (12h only) | Lap / Unlap | — |
+| BTC (Center) | — | — | — | Snooze (15 s) |
 
 ### LEDs
 
@@ -143,7 +146,15 @@ Connect the Nexys A7 via USB-JTAG and use **Open Hardware Manager → Program De
 ## Design Notes
 
 - **Clock divider** uses independent counters for each tick rate (1 Hz / 100 Hz / 1 kHz), ensuring no accumulated drift.
+- **Half-hour timezone support** — `time_logic` computes a separate minute offset (0 or +30) and propagates any carry into the hour calculation, keeping all arithmetic signed and properly wrapped to 0–23h / 0–59m.
+- **Alarm arm guard** — an `armed` flip-flop in `alarm_controller` is set after the first 1 Hz tick post-reset. This prevents the alarm from firing spuriously at power-up if the stored alarm time happens to match the initial counter values (all zeros).
 - **Display multiplexer** inserts a ~10 µs all-anodes-off blank between digit switches to eliminate ghosting.
 - **Reset synchroniser** uses the `ASYNC_REG` attribute to instruct Vivado to place both flip-flops in the same slice and suppress timing-arc warnings.
-- **Alarm snooze** is 15 seconds (configurable via the `SNOOZE_SECONDS` localparamter in `alarm_controller`).
-- Mode priority is: **Time-set > Alarm-set > Stopwatch > Normal**.
+- **Alarm snooze duration** is configurable via the `SNOOZE_SECONDS` localparam in `alarm_controller` (default: 15 seconds).
+- **Mode priority** is: Time-set > Alarm-set > Stopwatch > Normal.
+
+---
+
+## License
+
+This project is released under the [MIT License](LICENSE).
